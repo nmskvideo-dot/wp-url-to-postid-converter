@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: URL to Post ID Advanced Manager
-Description: Convert URLs to IDs, check HTTP status, mass update post statuses, export selectively, and manage 301 redirects with validation.
-Version: 2.3
+Description: Convert URLs to IDs, check HTTP status, mass update post statuses, export selectively, and manage 301 redirects using bulletproof Redirection 5.8+ native Red_Item engine with extensive logging.
+Version: 4.0
 Author: Ranked - Roman P
 */
 
@@ -15,7 +15,7 @@ if (!defined('ABSPATH')) {
 
 /**
  * Class UrlResolver
- * Responsible for resolving URLs to Post IDs, checking HTTP status codes, and fetching taxonomies.
+ * Responsible for resolving URLs to Post IDs (excluding drafts/trash/404 statuses), checking HTTP codes, and fetching taxonomies.
  */
 class UrlResolver {
     public function resolve_urls(array $urls) {
@@ -30,7 +30,14 @@ class UrlResolver {
 
             $sanitized_url = esc_url_raw($url);
             $http_status   = $this->check_http_status($sanitized_url);
-            $post_id       = url_to_postid($sanitized_url);
+            
+            // Step 1: Standard WordPress URL parsing
+            $post_id = url_to_postid($sanitized_url);
+
+            // Step 2: Advanced Fallback if standard routing fails (e.g., post is trashed, draft, or causes 404)
+            if (!$post_id) {
+                $post_id = $this->fallback_resolve_by_slug($sanitized_url);
+            }
 
             if ($post_id) {
                 $post = get_post($post_id);
@@ -70,6 +77,70 @@ class UrlResolver {
             return 'Error';
         }
         return wp_remote_retrieve_response_code($response);
+    }
+
+    /**
+     * Advanced deep-scan method using path fragments to locate non-public posts.
+     * Note: 'attachment' type is strictly skipped to prevent media image collisions.
+     */
+    private function fallback_resolve_by_slug($url) {
+        $path = parse_url($url, PHP_URL_PATH);
+        if (empty($path)) {
+            return 0;
+        }
+
+        $path_segments = array_filter(explode('/', trim($path, '/')));
+        if (empty($path_segments)) {
+            return 0;
+        }
+        $slug = end($path_segments);
+
+        $args = array(
+            'name'           => $slug,
+            'post_type'      => array('post', 'page', 'product'),
+            'post_status'    => array('publish', 'pending', 'draft', 'auto-draft', 'future', 'private', 'inherit', 'trash'),
+            'posts_per_page' => 1,
+            'fields'         => 'ids'
+        );
+
+        $custom_types = get_post_types(array('public' => true), 'names');
+        if (!empty($custom_types)) {
+            if (isset($custom_types['attachment'])) {
+                unset($custom_types['attachment']);
+            }
+            $args['post_type'] = array_values($custom_types);
+        }
+
+        $query = new \WP_Query($args);
+        if (!empty($query->posts)) {
+            return intval($query->posts[0]);
+        }
+
+        return 0;
+    }
+
+    public function refresh_resolved_posts(array $post_ids) {
+        $resolved = array();
+        foreach ($post_ids as $id) {
+            $post = get_post($id);
+            if ($post) {
+                $categories = get_the_term_list($id, 'category', '', ', ', '');
+                $tags       = get_the_term_list($id, 'post_tag', '', ', ', '');
+                $permalink  = get_permalink($id);
+
+                $resolved[$id] = array(
+                    'id'          => $id,
+                    'title'       => $post->post_title,
+                    'type'        => $post->post_type,
+                    'status'      => $post->post_status,
+                    'url'         => $permalink ? esc_url_raw($permalink) : '—',
+                    'http_status' => $this->check_http_status($permalink),
+                    'categories'  => $categories ? strip_tags($categories) : '—',
+                    'tags'        => $tags ? strip_tags($tags) : '—'
+                );
+            }
+        }
+        return $resolved;
     }
 }
 
@@ -149,35 +220,47 @@ class PostManager {
 
 /**
  * Class RedirectManager
- * Integrates with John Godley's Redirection plugin with duplicate rules protection.
+ * Direct integration with Redirection 5.8+ native core PHP API using Red_Item.
  */
 class RedirectManager {
     public function is_active() {
         return defined('REDIRECTION_FILE');
     }
 
+    /**
+     * Creates redirects using native Red_Item::create engine with complete structural diagnostics.
+     */
     public function create_homepage_redirects(array $post_ids) {
         if (!$this->is_active()) {
             return 0;
         }
 
-        if (!class_exists('Redirection_Item')) {
-            require_once dirname(REDIRECTION_FILE) . '/models/redirect.php';
-        }
-        if (!class_exists('RE_Group')) {
-            require_once dirname(REDIRECTION_FILE) . '/models/group.php';
+        // Force bootstrap file memory loaders to guarantee availability of Red_Item
+        if (function_exists('redirection_init')) {
+            redirection_init();
         }
 
-        // Dynamically discover the default group ID
-        $group_id = 1; 
-        if (method_exists('RE_Group', 'get_all')) {
+        if (!class_exists('Red_Item')) {
+            error_log('URL MANAGER PRO ERROR: Core class Red_Item is not available even after execution boot.');
+            return 0;
+        }
+
+        // Dynamically locate group id via stable class methods if available, fallback to 1
+        $group_id = 1;
+        if (class_exists('RE_Group') && method_exists('RE_Group', 'get_all')) {
             $groups = \RE_Group::get_all();
-            if (!empty($groups) && isset($groups[0]->id)) {
-                $group_id = intval($groups[0]->id);
+            if (!empty($groups)) {
+                $first_group = reset($groups);
+                if (isset($first_group->id)) {
+                    $group_id = intval($first_group->id);
+                } elseif (is_array($first_group) && isset($first_group['id'])) {
+                    $group_id = intval($first_group['id']);
+                }
             }
         }
 
         $redirects_created = 0;
+
         foreach ($post_ids as $id) {
             $permalink = get_permalink($id);
             if (!$permalink) {
@@ -189,27 +272,40 @@ class RedirectManager {
                 continue;
             }
 
-            // Guard: Avoid creating duplicate rules if the path is already registered
-            if (method_exists('Redirection_Item', 'get_by_url')) {
-                $existing_rule = \Redirection_Item::get_by_url($url_path);
-                if ($existing_rule) {
-                    continue;
-                }
-            }
-
-            $result = \Redirection_Item::create(array(
+            // Modern 5.8 data schema matching Red_Item_Sanitize pipeline expectations
+            $details = array(
                 'url'         => $url_path,
                 'action_data' => array('url' => '/'),
                 'action_type' => 'url',
                 'action_code' => 301,
                 'group_id'    => $group_id,
                 'match_type'  => 'url',
-            ));
+                'match_data'  => array(
+                    'source' => array(
+                        'flag_query'    => 'exact',
+                        'flag_case'     => false,
+                        'flag_trailing' => false,
+                        'flag_regex'    => false
+                    )
+                )
+            );
 
-            if (!is_wp_error($result)) {
-                $redirects_created++;
+            // Wrap database-level plugin mutation within structured try/catch diagnostic logic
+            try {
+                $result = \Red_Item::create($details);
+
+                if (is_wp_error($result)) {
+                    error_log(sprintf('URL MANAGER PRO WP_ERROR for URL %s: %s', $url_path, $result->get_error_message()));
+                } elseif (!$result) {
+                    error_log(sprintf('URL MANAGER PRO FAILURE: Red_Item::create returned false or invalid state for URL %s. Sent Details: %s', $url_path, print_r($details, true)));
+                } else {
+                    $redirects_created++;
+                }
+            } catch (\Exception $e) {
+                error_log(sprintf('URL MANAGER PRO CRITICAL EXCEPTION for URL %s: %s', $url_path, $e->getMessage()));
             }
         }
+
         return $redirects_created;
     }
 }
@@ -249,6 +345,16 @@ class AdminPage {
             return;
         }
 
+        // Handle Clear Session Action
+        if (isset($_POST['clear_url_manager_session'])) {
+            check_admin_referer('url_to_id_bulk_action', 'url_to_id_nonce');
+            delete_transient('url_pro_active_ids');
+            delete_transient('url_pro_not_found');
+            delete_transient('url_pro_input');
+            wp_redirect(admin_url('admin.php?page=url-manager-pro'));
+            exit;
+        }
+
         // Handle XML Export
         if (isset($_POST['download_export']) && !empty($_POST['action_ids'])) {
             check_admin_referer('url_to_id_bulk_action', 'url_to_id_nonce');
@@ -263,7 +369,8 @@ class AdminPage {
             $status = sanitize_key($_POST['bulk_status']);
             
             $count = $this->post_manager->update_statuses($ids, $status);
-            set_transient('url_pro_msg', sprintf('%d posts status changed to "%s".', $count, $status), 45);
+            set_transient('url_pro_msg', sprintf('%d posts status changed to "%s". State engine preserved.', $count, $status), 45);
+            
             wp_redirect(admin_url('admin.php?page=url-manager-pro'));
             exit;
         }
@@ -274,46 +381,65 @@ class AdminPage {
             $ids = array_map('intval', explode(',', $_POST['action_ids']));
             
             $count = $this->redirect_manager->create_homepage_redirects($ids);
-            set_transient('url_pro_msg', sprintf('%d redirect rules to homepage processed.', $count), 45);
+            if ($count > 0) {
+                set_transient('url_pro_msg', sprintf('%d redirect rules to homepage processed successfully via native Red_Item engine.', $count), 45);
+            } else {
+                set_transient('url_pro_msg', 'No new redirects created. Please inspect your wp-content/debug.log file for explicit diagnostic logs.', 45);
+            }
+            
             wp_redirect(admin_url('admin.php?page=url-manager-pro'));
             exit;
         }
     }
 
-    /**
-     * Helper to render custom semantic HTTP status color badges
-     */
     private function get_http_badge_styles($status) {
         if (!is_numeric($status)) {
-            return 'background: #f4f4f5; color: #71717a;'; // Gray (Network/WP Error)
+            return 'background: #f4f4f5; color: #71717a;';
         }
 
         $code = intval($status);
         if ($code >= 200 && $code < 300) {
-            return 'background: #e7f4e4; color: #2e7d32;'; // Green (2xx Success)
+            return 'background: #e7f4e4; color: #2e7d32;';
         }
         if ($code >= 300 && $code < 400) {
-            return 'background: #fef3c7; color: #d97706;'; // Orange/Amber (3xx Redirect)
+            return 'background: #fef3c7; color: #d97706;';
         }
         if ($code >= 400 && $code < 500) {
-            return 'background: #fcf0f0; color: #c62828;'; // Red (4xx Client Error)
+            return 'background: #fcf0f0; color: #c62828;';
         }
         if ($code >= 500) {
-            return 'background: #fee2e2; color: #991b1b;'; // Dark Red (5xx Server Error)
+            return 'background: #fee2e2; color: #991b1b;';
         }
 
         return 'background: #f4f4f5; color: #71717a;';
     }
 
     public function render_page() {
-        $urls_input = '';
+        $urls_input = get_transient('url_pro_input') ?: '';
         $results = null;
 
+        // Process new analysis request
         if (isset($_POST['submit_urls']) && isset($_POST['url_to_id_convert_nonce'])) {
             if (wp_verify_nonce($_POST['url_to_id_convert_nonce'], 'url_to_id_convert_action')) {
                 $urls_input = esc_textarea($_POST['urls']);
                 $urls_array = explode("\n", $_POST['urls']);
                 $results    = $this->resolver->resolve_urls($urls_array);
+
+                // Cache state inside transient scope
+                set_transient('url_pro_input', $_POST['urls'], HOUR_IN_SECONDS);
+                set_transient('url_pro_active_ids', array_keys($results['found']), HOUR_IN_SECONDS);
+                set_transient('url_pro_not_found', $results['not_found'], HOUR_IN_SECONDS);
+            }
+        } else {
+            // Restore context from previous session action if available
+            $active_ids = get_transient('url_pro_active_ids');
+            $not_found  = get_transient('url_pro_not_found');
+
+            if (is_array($active_ids)) {
+                $results = array(
+                    'found'     => $this->resolver->refresh_resolved_posts($active_ids),
+                    'not_found' => is_array($not_found) ? $not_found : array()
+                );
             }
         }
 
@@ -337,7 +463,13 @@ class AdminPage {
 
             <?php if ($results !== null) : ?>
                 <hr>
-                <h2>Analysis Results</h2>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <h2>Analysis Results</h2>
+                    <form method="post" action="">
+                        <?php wp_nonce_field('url_to_id_bulk_action', 'url_to_id_nonce'); ?>
+                        <input type="submit" name="clear_url_manager_session" class="button button-link-delete" value="✕ Clear Results & Start New Batch" style="color: #d63638; text-decoration: none; font-weight: bold;">
+                    </form>
+                </div>
 
                 <?php if (!empty($results['found'])) : 
                     $found_ids = array_keys($results['found']);
@@ -349,7 +481,7 @@ class AdminPage {
                                 <th style="width: 60px;">ID</th>
                                 <th style="width: 80px;">Type</th>
                                 <th style="width: 90px;">Status</th>
-                                <th style="width: 60px;">HTTP</th>
+                                <th style="width: 80px;">HTTP</th>
                                 <th style="width: 150px;">Categories</th>
                                 <th style="width: 150px;">Tags</th>
                                 <th>Title</th>
@@ -376,7 +508,7 @@ class AdminPage {
                         </tbody>
                     </table>
 
-                    <h3 style="margin-top: 30px;">Available Actions</h3>
+                    <h3 style="margin-top: 30px;">Available Actions (Sequential Workflow)</h3>
                     
                     <div style="display: flex; flex-direction: column; gap: 20px;">
                         
@@ -412,7 +544,7 @@ class AdminPage {
                             <h3>Option 3: 301 Redirection Manager Link</h3>
                             <p>Automate structural URL changes by injecting direct 301 forwarding instructions inside the Redirection ecosystem.</p>
                             <?php if ($this->redirect_manager->is_active()) : ?>
-                                <p style="color: #d63638; font-weight: bold; margin-bottom: 12px;">⚠️ WARNING: This rule maps paths STRICTLY onto the homepage root structure (/). Duplicate rules for existing paths will be skipped automatically.</p>
+                                <p style="color: #d63638; font-weight: bold; margin-bottom: 12px;">⚠️ WARNING: This rule maps paths STRICTLY onto the homepage root structure (/). Duplicate rules for existing paths will be skipped automatically by Redirection core validation.</p>
                                 <form method="post" action="">
                                     <?php wp_nonce_field('url_to_id_bulk_action', 'url_to_id_nonce'); ?>
                                     <input type="hidden" name="action_ids" value="<?php echo esc_attr(implode(',', $found_ids)); ?>">

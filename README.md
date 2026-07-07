@@ -6,12 +6,14 @@ A powerful WordPress admin plugin for analyzing URLs, resolving them to WordPres
 
 - Analyze a list of URLs line by line
 - Resolve URLs to WordPress post IDs using WordPress core logic
+- Apply a fallback resolution method for URLs that do not map cleanly through standard routing
 - Check HTTP status for each submitted URL and display it with color-coded badges
 - Show post title, type, status, categories, tags, and source URL for each matched result
 - Export only the selected posts and related media attachments to a filtered WordPress XML file
 - Change the status of matched posts in bulk (Trash, Draft, Private, Pending, Publish)
 - Create homepage 301 redirect rules through the Redirection plugin when it is active
-- Skip duplicate redirect rules automatically to avoid repeated entries
+- Use the native Redirection 5.8+ engine with structured logging and validation-aware redirect creation
+- Preserve analysis state across the current session and allow clearing it when starting a new batch
 - Generate WP-CLI fallback commands for manual export workflows
 - Restrict access to administrators with WordPress nonces and capability checks
 
@@ -41,7 +43,7 @@ A powerful WordPress admin plugin for analyzing URLs, resolving them to WordPres
 
 ## How it works
 
-The plugin uses WordPress core URL resolution through `url_to_postid()` to identify matching posts from the submitted URLs. It also checks each URL response and builds a detailed analysis table for the found content.
+The plugin uses WordPress core URL resolution through `url_to_postid()` to identify matching posts from the submitted URLs. If that fails, it applies a fallback lookup by slug to improve coverage for non-public or otherwise difficult-to-resolve records. It also checks each URL response and builds a detailed analysis table for the found content.
 
 ## Warning
 
