@@ -1,9 +1,9 @@
 <?php
 /*
 Plugin Name: URL to Post ID Advanced Manager
-Description: Convert URLs to IDs, check HTTP status, mass update post statuses, export selectively, and manage 301 redirects.
-Version: 2.2
-Author: Ranked
+Description: Convert URLs to IDs, check HTTP status, mass update post statuses, export selectively, and manage 301 redirects with validation.
+Version: 2.3
+Author: Ranked - Roman P
 */
 
 namespace UrlToIdExporter;
@@ -35,7 +35,6 @@ class UrlResolver {
             if ($post_id) {
                 $post = get_post($post_id);
                 if ($post) {
-                    // Fetch categories and tags as plain text lists
                     $categories = get_the_term_list($post_id, 'category', '', ', ', '');
                     $tags       = get_the_term_list($post_id, 'post_tag', '', ', ', '');
 
@@ -111,7 +110,7 @@ class ExportManager {
 
 /**
  * Class PostManager
- * Handles bulk status modifications (Trash, Draft, Private, Pending, Publish).
+ * Handles bulk status modifications (Trash, Draft, Private, Pending, Publish) with strict validation.
  */
 class PostManager {
     public function update_statuses(array $post_ids, $new_status) {
@@ -122,10 +121,17 @@ class PostManager {
 
         $updated_count = 0;
         foreach ($post_ids as $id) {
+            $post = get_post($id);
+            if (!$post) {
+                continue;
+            }
+
             if ($new_status === 'trash') {
-                if (get_post_status($id) !== 'trash') {
-                    wp_trash_post($id);
-                    $updated_count++;
+                if ($post->post_status !== 'trash') {
+                    $result = wp_trash_post($id);
+                    if ($result) {
+                        $updated_count++;
+                    }
                 }
             } else {
                 $result = wp_update_post(array(
@@ -143,20 +149,32 @@ class PostManager {
 
 /**
  * Class RedirectManager
- * Integrates with John Godley's Redirection plugin.
+ * Integrates with John Godley's Redirection plugin with duplicate rules protection.
  */
 class RedirectManager {
     public function is_active() {
         return defined('REDIRECTION_FILE');
     }
 
-    public function create_hompage_redirects(array $post_ids) {
+    public function create_homepage_redirects(array $post_ids) {
         if (!$this->is_active()) {
             return 0;
         }
 
         if (!class_exists('Redirection_Item')) {
             require_once dirname(REDIRECTION_FILE) . '/models/redirect.php';
+        }
+        if (!class_exists('RE_Group')) {
+            require_once dirname(REDIRECTION_FILE) . '/models/group.php';
+        }
+
+        // Dynamically discover the default group ID
+        $group_id = 1; 
+        if (method_exists('RE_Group', 'get_all')) {
+            $groups = \RE_Group::get_all();
+            if (!empty($groups) && isset($groups[0]->id)) {
+                $group_id = intval($groups[0]->id);
+            }
         }
 
         $redirects_created = 0;
@@ -171,12 +189,20 @@ class RedirectManager {
                 continue;
             }
 
+            // Guard: Avoid creating duplicate rules if the path is already registered
+            if (method_exists('Redirection_Item', 'get_by_url')) {
+                $existing_rule = \Redirection_Item::get_by_url($url_path);
+                if ($existing_rule) {
+                    continue;
+                }
+            }
+
             $result = \Redirection_Item::create(array(
                 'url'         => $url_path,
                 'action_data' => array('url' => '/'),
                 'action_type' => 'url',
                 'action_code' => 301,
-                'group_id'    => 1,
+                'group_id'    => $group_id,
                 'match_type'  => 'url',
             ));
 
@@ -247,11 +273,36 @@ class AdminPage {
             check_admin_referer('url_to_id_bulk_action', 'url_to_id_nonce');
             $ids = array_map('intval', explode(',', $_POST['action_ids']));
             
-            $count = $this->redirect_manager->create_hompage_redirects($ids);
-            set_transient('url_pro_msg', sprintf('%d redirect rules to homepage created.', $count), 45);
+            $count = $this->redirect_manager->create_homepage_redirects($ids);
+            set_transient('url_pro_msg', sprintf('%d redirect rules to homepage processed.', $count), 45);
             wp_redirect(admin_url('admin.php?page=url-manager-pro'));
             exit;
         }
+    }
+
+    /**
+     * Helper to render custom semantic HTTP status color badges
+     */
+    private function get_http_badge_styles($status) {
+        if (!is_numeric($status)) {
+            return 'background: #f4f4f5; color: #71717a;'; // Gray (Network/WP Error)
+        }
+
+        $code = intval($status);
+        if ($code >= 200 && $code < 300) {
+            return 'background: #e7f4e4; color: #2e7d32;'; // Green (2xx Success)
+        }
+        if ($code >= 300 && $code < 400) {
+            return 'background: #fef3c7; color: #d97706;'; // Orange/Amber (3xx Redirect)
+        }
+        if ($code >= 400 && $code < 500) {
+            return 'background: #fcf0f0; color: #c62828;'; // Red (4xx Client Error)
+        }
+        if ($code >= 500) {
+            return 'background: #fee2e2; color: #991b1b;'; // Dark Red (5xx Server Error)
+        }
+
+        return 'background: #f4f4f5; color: #71717a;';
     }
 
     public function render_page() {
@@ -312,13 +363,13 @@ class AdminPage {
                                     <td><span class="post-state"><?php echo esc_html($post_data['type']); ?></span></td>
                                     <td><code><?php echo esc_html($post_data['status']); ?></code></td>
                                     <td>
-                                        <span class="badge" style="background: <?php echo $post_data['http_status'] == 200 ? '#e7f4e4' : '#fcf0f0'; ?>; color: <?php echo $post_data['http_status'] == 200 ? '#2e7d32' : '#c62828'; ?>; padding: 3px 6px; border-radius: 3px; font-weight: bold;">
+                                        <span class="badge" style="<?php echo $this->get_http_badge_styles($post_data['http_status']); ?> padding: 3px 6px; border-radius: 3px; font-weight: bold;">
                                             <?php echo esc_html($post_data['http_status']); ?>
                                         </span>
                                     </td>
                                     <td><small><?php echo esc_html($post_data['categories']); ?></small></td>
                                     <td><small><?php echo esc_html($post_data['tags']); ?></small></td>
-                                    <td><a href="<?php echo get_edit_post_link($post_data['id']); ?>" target="_blank"><strong><?php echo esc_html($post_data['title']); ?></strong></a></td>
+                                    <td><a href="<?php echo esc_url(get_edit_post_link($post_data['id'])); ?>" target="_blank"><strong><?php echo esc_html($post_data['title']); ?></strong></a></td>
                                     <td><small style="color:#666;"><?php echo esc_html($post_data['url']); ?></small></td>
                                 </tr>
                             <?php endforeach; ?>
@@ -361,7 +412,7 @@ class AdminPage {
                             <h3>Option 3: 301 Redirection Manager Link</h3>
                             <p>Automate structural URL changes by injecting direct 301 forwarding instructions inside the Redirection ecosystem.</p>
                             <?php if ($this->redirect_manager->is_active()) : ?>
-                                <p style="color: #d63638; font-weight: bold; margin-bottom: 12px;">⚠️ WARNING: This rule maps paths STRICTLY onto the homepage root structure (/). Modification of destinations requires internal adjustment via Redirection Tools later.</p>
+                                <p style="color: #d63638; font-weight: bold; margin-bottom: 12px;">⚠️ WARNING: This rule maps paths STRICTLY onto the homepage root structure (/). Duplicate rules for existing paths will be skipped automatically.</p>
                                 <form method="post" action="">
                                     <?php wp_nonce_field('url_to_id_bulk_action', 'url_to_id_nonce'); ?>
                                     <input type="hidden" name="action_ids" value="<?php echo esc_attr(implode(',', $found_ids)); ?>">
@@ -390,7 +441,7 @@ class AdminPage {
                                 <?php foreach ($results['not_found'] as $fail) : ?>
                                     <tr>
                                         <td>
-                                            <span style="color: #d63638; font-weight: bold;">
+                                            <span class="badge" style="<?php echo $this->get_http_badge_styles($fail['http_status']); ?> padding: 3px 6px; border-radius: 3px; font-weight: bold;">
                                                 <?php echo esc_html($fail['http_status']); ?>
                                             </span>
                                         </td>
