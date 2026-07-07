@@ -1,48 +1,50 @@
-# URL to Post ID Converter, Exporter & Trash Manager
+# URL to Post ID Advanced Manager
 
-A lightweight WordPress admin plugin that converts a list of URLs into post IDs, exports the selected posts to a filtered WordPress XML file, moves them to Trash, and can create Redirection rules for them.
+A powerful WordPress admin plugin for analyzing URLs, resolving them to WordPress content, checking HTTP status, exporting selected posts to XML, changing post statuses in bulk, and creating 301 redirects through the Redirection plugin.
 
 ## Features
 
-- Convert one or more URLs into WordPress post IDs
-- Process bulk input with one URL per line
-- Download a filtered XML export containing only the selected posts and their media attachments
-- Move all matched posts directly to the WordPress Trash
-- Create 301 redirect rules to the homepage through the Redirection plugin (when available)
-- Generate WP-CLI fallback commands for export and trash actions
-- Restrict access to administrators with WordPress nonce protection
+- Analyze a list of URLs line by line
+- Resolve URLs to WordPress post IDs using WordPress core logic
+- Check HTTP status for each submitted URL
+- Display post title, type, status, categories, tags, and source URL for matched content
+- Export only the selected posts and related media attachments to a filtered WordPress XML file
+- Change the status of matched posts in bulk (Trash, Draft, Private, Pending, Publish)
+- Create homepage 301 redirect rules through the Redirection plugin when it is active
+- Generate WP-CLI fallback commands for manual export workflows
+- Restrict access to administrators with WordPress nonces and capability checks
 
 ## Requirements
 
 - WordPress 5.0+
 - PHP 7.0+
 - Administrator access
-- Optional: Redirection plugin for redirect rule creation
+- Optional: Redirection plugin for redirect rule generation
 
 ## Installation
 
 1. Upload the plugin folder to your WordPress installation under `wp-content/plugins/`.
 2. Activate the plugin from the WordPress admin panel.
-3. Open the plugin from the admin menu named “URL to Post ID”.
+3. Open the plugin from the admin menu named “URL Manager Pro”.
 
 ## Usage
 
 1. Open the plugin page in the WordPress admin.
-2. Paste one URL per line into the text area.
-3. Click “Convert URLs”.
-4. Choose one of the available actions:
+2. Paste one URL per line into the input field.
+3. Click “Analyze URLs”.
+4. Review the matched content and choose one of the available actions:
+   - Change post status in bulk
    - Download a filtered XML export file
-   - Move the matched posts to Trash
-   - Create 301 redirects in Redirection (if the plugin is active)
-   - Copy the generated WP-CLI fallback commands
+   - Generate 301 redirect rules in Redirection
+   - Use the WP-CLI fallback command for export
 
 ## How it works
 
-The plugin uses WordPress core URL resolution through `url_to_postid()` to identify matching posts from the provided URLs. When you export the results, the plugin narrows the export query to the selected post IDs and their attachments so the export stays focused on the intended content.
+The plugin uses WordPress core URL resolution through `url_to_postid()` to identify matching posts from the submitted URLs. It also checks the HTTP response for each URL and builds a detailed analysis table for the found content.
 
 ## Warning
 
-The Trash and Redirection actions are destructive or redirect-related operations. Please review the selected posts carefully before using them.
+Bulk status changes and redirect creation are operational actions. Review the selected content carefully before applying them.
 
 ## Security
 
