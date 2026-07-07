@@ -1,13 +1,13 @@
 # URL to Post ID Converter & Exporter
 
-A lightweight WordPress admin plugin that converts a list of URLs into post IDs, generates WP-CLI commands, and exports selected posts to a standard WordPress XML export file.
+A lightweight WordPress admin plugin that converts a list of URLs into post IDs, generates WP-CLI commands, and exports the selected posts to a filtered WordPress XML export file.
 
 ## Features
 
 - Convert one or more URLs into WordPress post IDs
 - Process bulk input with one URL per line
 - Generate WP-CLI export and trash commands
-- Download a custom XML export containing only the selected posts
+- Download a filtered XML export containing only the selected posts and their media attachments
 - Restrict access to administrators with WordPress nonce protection
 
 ## Requirements
@@ -28,17 +28,17 @@ A lightweight WordPress admin plugin that converts a list of URLs into post IDs,
 2. Paste one URL per line into the text area.
 3. Click “Convert URLs”.
 4. Use one of the available actions:
-   - Download an XML export file
+   - Download a filtered XML export file
    - Copy the generated WP-CLI commands
+
+## How it works
+
+The plugin uses WordPress core URL resolution through `url_to_postid()` to identify matching posts from the provided URLs. When you export the results, the plugin narrows the export query to the selected post IDs and their attachments so the export stays focused on the intended content.
 
 ## Security
 
 - Uses WordPress nonces for form validation
 - Restricts access to users with the `manage_options` capability
-
-## Notes
-
-The plugin uses WordPress core URL resolution through `url_to_postid()` to identify matching posts from provided URLs.
 
 ## License
 

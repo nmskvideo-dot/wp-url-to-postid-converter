@@ -1,9 +1,9 @@
 <?php
 /*
 Plugin Name: URL to Post ID Converter & Exporter
-Description: Converts a list of URLs to post IDs, generates WP-CLI commands, and exports chosen posts to XML.
-Version: 1.2
-Author: Ranked
+Description: Converts a list of URLs to post IDs, generates WP-CLI commands, and exports chosen posts safely to XML.
+Version: 1.3
+Author: Ranked - Roman P
 */
 
 // Prohibit direct access to the file
@@ -23,9 +23,30 @@ function url_to_postid_menu() {
     );
 }
 
+// Global variable to pass target IDs to the query filter
+global $url_to_id_target_posts;
+$url_to_id_target_posts = array();
+
+// Filter to restrict export query strictly to selected IDs and their attachments
+add_filter('query', 'url_to_id_restrict_export_query');
+function url_to_id_restrict_export_query($query) {
+    global $wpdb, $url_to_id_target_posts;
+
+    // Apply filter only during our custom export process when IDs are provided
+    if (!empty($url_to_id_target_posts) && strpos($query, "SELECT ID FROM {$wpdb->posts}") !== false && strpos($query, "auto-draft") !== false) {
+        $ids_string = implode(',', array_map('intval', $url_to_id_target_posts));
+        
+        // Rewrite query to fetch only requested posts OR attachments belonging to them
+        $query = "SELECT ID FROM {$wpdb->posts} WHERE (ID IN ($ids_string) OR (post_type = 'attachment' AND post_parent IN ($ids_string))) AND post_status != 'auto-draft'";
+    }
+    return $query;
+}
+
 // Handle native WordPress export if requested before any HTML output
 add_action('admin_init', 'url_to_postid_handle_export');
 function url_to_postid_handle_export() {
+    global $url_to_id_target_posts;
+
     if (isset($_POST['download_export']) && !empty($_POST['export_ids'])) {
         // Verify nonce for security
         check_admin_referer('url_to_id_export_action', 'url_to_id_nonce');
@@ -41,20 +62,20 @@ function url_to_postid_handle_export() {
             return;
         }
 
+        // Set global IDs for the query hook to intercept
+        $url_to_id_target_posts = $post_ids;
+
         // Include WordPress export API
         require_once ABSPATH . 'wp-admin/includes/export.php';
 
-        $filename = 'wordpress-custom-export-' . date('Y-m-d-H-i-s') . '.xml';
+        $filename = 'wordpress-filtered-export-' . date('Y-m-d-H-i-s') . '.xml';
 
         header('Content-Description: File Transfer');
         header('Content-Disposition: attachment; filename=' . $filename);
         header('Content-Type: text/xml; charset=' . get_option('blog_charset'), true);
 
-        // Run native WP export filtered by post IDs
-        export_wp(array(
-            'post__in' => $post_ids,
-            'content'  => 'all'
-        ));
+        // Run export; the query filter above will now restrict it strictly to our IDs
+        export_wp(array('content' => 'all'));
         exit;
     }
 }
@@ -122,9 +143,10 @@ function url_to_postid_page() {
                 <p><code><?php echo esc_html(implode(', ', $post_ids)); ?></code></p>
             </div>
 
+            <!-- Native WP Export Button -->
             <div class="card">
                 <h3>Option 1: Direct XML Export</h3>
-                <p>Click the button below to download a standard WordPress export file containing only the identified posts.</p>
+                <p>Click the button below to download a standard WordPress export file containing ONLY the identified posts and their media.</p>
                 <form method="post" action="">
                     <?php wp_nonce_field('url_to_id_export_action', 'url_to_id_nonce'); ?>
                     <input type="hidden" name="export_ids" value="<?php echo esc_attr(implode(',', $post_ids)); ?>">
@@ -132,6 +154,7 @@ function url_to_postid_page() {
                 </form>
             </div>
 
+            <!-- WP-CLI Commands Section with Auto-detected Paths -->
             <div class="card">
                 <h3>Option 2: WP-CLI Commands</h3>
                 <p>If you prefer running this via terminal, use the dynamically generated commands below:</p>
